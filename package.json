@@ -1,0 +1,32 @@
+{
+  "name": "discord-email-forwarder",
+  "version": "1.0.0",
+  "description": "A Discord bot that forwards emails from an inbox to a Discord channel",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "watch": "tsx watch src/index.ts"
+  },
+  "keywords": [
+    "discord",
+    "email",
+    "bot",
+    "forwarder"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "imap": "^0.8.19",
+    "mailparser": "^3.6.6",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.5",
+    "@types/imap": "^0.8.40",
+    "typescript": "^5.3.3",
+    "tsx": "^4.7.0"
+  }
+}
