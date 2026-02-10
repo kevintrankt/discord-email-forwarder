@@ -39,6 +39,38 @@ client.once('clientReady', () => {
     tls: process.env.EMAIL_TLS !== 'false',
   });
 
+  // Function to check if email contains "going.com"
+  const isGoingEmail = (email: any): boolean => {
+    const searchTerm = 'going.com';
+    
+    // Check from address
+    if (email.from && email.from.toLowerCase().includes(searchTerm)) {
+      return true;
+    }
+    
+    // Check to address
+    if (email.to && email.to.toLowerCase().includes(searchTerm)) {
+      return true;
+    }
+    
+    // Check subject
+    if (email.subject && email.subject.toLowerCase().includes(searchTerm)) {
+      return true;
+    }
+    
+    // Check text content
+    if (email.text && email.text.toLowerCase().includes(searchTerm)) {
+      return true;
+    }
+    
+    // Check HTML content
+    if (email.html && email.html.toLowerCase().includes(searchTerm)) {
+      return true;
+    }
+    
+    return false;
+  };
+
   // Function to extract "View flight details" link from email
   const extractFlightDetailsLink = (email: any): string | null => {
     const htmlContent = email.html || '';
@@ -84,6 +116,12 @@ client.once('clientReady', () => {
 
   // Function to send email to Discord
   const sendEmailToDiscord = async (email: any) => {
+    // Filter: only process emails containing "going.com"
+    if (!isGoingEmail(email)) {
+      console.log(`⏭️ Skipping email (not from going.com): ${email.subject}`);
+      return;
+    }
+    
     try {
       const channel = await client.channels.fetch(channelId) as TextChannel;
       

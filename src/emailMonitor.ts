@@ -11,94 +11,116 @@ export interface EmailConfig {
 }
 
 export class EmailMonitor extends EventEmitter {
-  private imap: Imap;
+  private imap: Imap | null = null;
   private isRunning: boolean = false;
   private checkInterval: NodeJS.Timeout | null = null;
   private processedEmails: Set<string> = new Set();
 
   constructor(private config: EmailConfig) {
     super();
-    
-    this.imap = new Imap({
-      user: config.user,
-      password: config.password,
-      host: config.host,
-      port: config.port,
-      tls: config.tls,
-      tlsOptions: { rejectUnauthorized: false },
-    });
-
-    this.setupImapListeners();
   }
 
-  private setupImapListeners(): void {
-    this.imap.once('ready', () => {
+  private createImap(): Imap {
+    return new Imap({
+      user: this.config.user,
+      password: this.config.password,
+      host: this.config.host,
+      port: this.config.port,
+      tls: this.config.tls,
+      tlsOptions: { rejectUnauthorized: false },
+    });
+  }
+
+  private connectAndRun(
+    mode: 'poll' | 'latest',
+    onReady: (imap: Imap) => void
+  ): void {
+    if (!this.isRunning) return;
+
+    if (this.imap) {
+      console.log('⚠️ IMAP connection already active');
+      return;
+    }
+
+    const imap = this.createImap();
+    this.imap = imap;
+
+    imap.once('ready', () => {
       console.log('✅ Connected to email server');
-      this.openInbox();
+      onReady(imap);
     });
 
-    this.imap.once('error', (err: Error) => {
+    imap.once('error', (err: Error) => {
       console.error('❌ IMAP connection error:', err);
       this.emit('error', err);
-      
+      this.finishConnection(mode, true);
+
       // Attempt to reconnect after 30 seconds
-      if (this.isRunning) {
+      if (this.isRunning && mode === 'poll') {
         console.log('🔄 Attempting to reconnect in 30 seconds...');
         setTimeout(() => {
-          if (this.isRunning) {
-            this.connect();
+          if (this.isRunning && !this.imap) {
+            this.connectAndRun('poll', (imapInstance) => {
+              this.openInbox(imapInstance, 'poll');
+            });
           }
         }, 30000);
       }
     });
 
-    this.imap.once('end', () => {
+    imap.once('end', () => {
       console.log('📪 IMAP connection ended');
+      this.imap = null;
     });
-  }
 
-  private connect(): void {
     try {
-      this.imap.connect();
+      imap.connect();
     } catch (error) {
       console.error('❌ Failed to connect to email server:', error);
       this.emit('error', error);
+      this.finishConnection(mode, true);
     }
   }
 
-  private openInbox(): void {
-    this.imap.openBox('INBOX', false, (err, box) => {
+  private openInbox(imap: Imap, mode: 'poll' | 'latest'): void {
+    imap.openBox('INBOX', false, (err, box) => {
       if (err) {
         console.error('❌ Error opening inbox:', err);
         this.emit('error', err);
+        this.finishConnection(mode, true);
         return;
       }
-      
+
       console.log(`📬 Inbox opened (${box.messages.total} total messages)`);
-      this.checkForNewEmails();
+      if (mode === 'poll') {
+        this.checkForNewEmails(imap);
+      } else {
+        this.getLatestEmailFromImap(imap);
+      }
     });
   }
 
-  private checkForNewEmails(): void {
+  private checkForNewEmails(imap: Imap): void {
     if (!this.isRunning) return;
 
     // Search for unseen emails
-    this.imap.search(['UNSEEN'], (err, results) => {
+    imap.search(['UNSEEN'], (err, results) => {
       if (err) {
         console.error('❌ Error searching for emails:', err);
         this.emit('error', err);
+        this.finishConnection('poll', true);
         return;
       }
 
       if (results.length === 0) {
         console.log('📭 No new emails');
-        this.scheduleNextCheck();
+        this.finishConnection('poll', false);
         return;
       }
 
       console.log(`📬 Found ${results.length} new email(s)`);
-      
-      const fetch = this.imap.fetch(results, {
+
+      const fetch = imap.fetch(results, {
         bodies: '',
         markSeen: true,
       });
@@ -113,7 +135,7 @@ export class EmailMonitor extends EventEmitter {
 
             // Use message-id as unique identifier
             const messageId = parsed.messageId || `${seqno}-${Date.now()}`;
-            
+
             if (!this.processedEmails.has(messageId)) {
               this.processedEmails.add(messageId);
               this.emit('newEmail', this.formatEmail(parsed));
@@ -129,11 +151,61 @@ export class EmailMonitor extends EventEmitter {
       fetch.once('error', (err) => {
         console.error('❌ Fetch error:', err);
         this.emit('error', err);
+        this.finishConnection('poll', true);
       });
 
       fetch.once('end', () => {
         console.log('✅ Finished processing new emails');
-        this.scheduleNextCheck();
+        this.finishConnection('poll', false);
+      });
+    });
+  }
+
+  private getLatestEmailFromImap(imap: Imap): void {
+    if (!this.isRunning) return;
+
+    imap.search(['ALL'], (err, results) => {
+      if (err) {
+        console.error('❌ Error searching for emails:', err);
+        this.finishConnection('latest', true);
+        return;
+      }
+
+      if (results.length === 0) {
+        console.log('📭 No emails found in inbox');
+        this.finishConnection('latest', false);
+        return;
+      }
+
+      const latestSeqno = results[results.length - 1];
+      console.log(`📬 Fetching latest email (seqno: ${latestSeqno})...`);
+
+      const fetch = imap.fetch([latestSeqno], {
+        bodies: '',
+        markSeen: false, // Don't mark as seen for testing
+      });
+
+      fetch.on('message', (msg) => {
+        msg.on('body', (stream) => {
+          simpleParser(stream, (err, parsed) => {
+            if (err) {
+              console.error('❌ Error parsing email:', err);
+              return;
+            }
+
+            console.log(`📧 Latest email: ${parsed.subject}`);
+            this.emit('latestEmail', this.formatEmail(parsed));
+          });
+        });
+      });
+
+      fetch.once('error', (err) => {
+        console.error('❌ Fetch error:', err);
+        this.finishConnection('latest', true);
+      });
+
+      fetch.once('end', () => {
+        this.finishConnection('latest', false);
       });
     });
   }
@@ -141,12 +213,36 @@ export class EmailMonitor extends EventEmitter {
   private scheduleNextCheck(): void {
     if (!this.isRunning) return;
 
-    // Check for new emails every 60 seconds by default
-    const interval = parseInt(process.env.EMAIL_CHECK_INTERVAL || '60000');
-    
+    // Check for new emails every 60 minutes by default
+    const interval = parseInt(process.env.EMAIL_CHECK_INTERVAL || '3600000');
+
     this.checkInterval = setTimeout(() => {
-      this.checkForNewEmails();
+      this.connectAndRun('poll', (imapInstance) => {
+        this.openInbox(imapInstance, 'poll');
+      });
     }, interval);
+  }
+
+  private finishConnection(mode: 'poll' | 'latest', isError: boolean): void {
+    if (!this.imap) {
+      if (mode === 'poll' && !isError) {
+        this.scheduleNextCheck();
+      }
+      return;
+    }
+
+    try {
+      this.imap.removeAllListeners();
+      this.imap.end();
+    } catch (error) {
+      console.warn('⚠️ Error closing IMAP connection:', error);
+    } finally {
+      this.imap = null;
+    }
+
+    if (mode === 'poll' && !isError) {
+      this.scheduleNextCheck();
+    }
   }
 
   private formatEmail(parsed: ParsedMail) {
@@ -169,11 +265,11 @@ export class EmailMonitor extends EventEmitter {
 
   private formatAddress(address: any): string {
     if (!address) return 'Unknown';
-    
+
     if (Array.isArray(address)) {
       return address.map(addr => addr.text || addr.address).join(', ');
     }
-    
+
     return address.text || address.address || 'Unknown';
   }
 
@@ -184,7 +280,9 @@ export class EmailMonitor extends EventEmitter {
     }
 
     this.isRunning = true;
-    this.connect();
+    this.connectAndRun('poll', (imapInstance) => {
+      this.openInbox(imapInstance, 'poll');
+    });
   }
 
   public getLatestEmail(): void {
@@ -193,44 +291,8 @@ export class EmailMonitor extends EventEmitter {
       return;
     }
 
-    // Fetch the most recent email
-    this.imap.search(['ALL'], (err, results) => {
-      if (err) {
-        console.error('❌ Error searching for emails:', err);
-        return;
-      }
-
-      if (results.length === 0) {
-        console.log('📭 No emails found in inbox');
-        return;
-      }
-
-      // Get the last email (most recent)
-      const latestSeqno = results[results.length - 1];
-      console.log(`📬 Fetching latest email (seqno: ${latestSeqno})...`);
-
-      const fetch = this.imap.fetch([latestSeqno], {
-        bodies: '',
-        markSeen: false, // Don't mark as seen for testing
-      });
-
-      fetch.on('message', (msg) => {
-        msg.on('body', (stream) => {
-          simpleParser(stream, (err, parsed) => {
-            if (err) {
-              console.error('❌ Error parsing email:', err);
-              return;
-            }
-
-            console.log(`📧 Latest email: ${parsed.subject}`);
-            this.emit('latestEmail', this.formatEmail(parsed));
-          });
-        });
-      });
-
-      fetch.once('error', (err) => {
-        console.error('❌ Fetch error:', err);
-      });
+    this.connectAndRun('latest', (imapInstance) => {
+      this.openInbox(imapInstance, 'latest');
     });
   }
 
@@ -245,7 +307,11 @@ export class EmailMonitor extends EventEmitter {
       this.checkInterval = null;
     }
 
-    this.imap.end();
+    if (this.imap) {
+      this.imap.removeAllListeners();
+      this.imap.end();
+      this.imap = null;
+    }
     this.processedEmails.clear();
   }
 }

@@ -6,8 +6,9 @@ A Discord bot that monitors an email inbox (via IMAP) and forwards all new email
 
 - 📧 Monitors email inbox in real-time using IMAP
 - 🤖 Forwards emails to Discord with the subject line
-- 📸 **Generates and posts a visual screenshot of the email** (exactly how it looks!)
-- 🎨 Beautiful email rendering with proper formatting
+- 🔍 **Filters emails containing "going.com"** (only forwards flight-related emails)
+- ✈️ Automatically extracts and includes "View flight details" links
+- 🖼️ Posts images from email attachments
 - 🔄 Auto-reconnects on connection loss
 - ⚙️ Configurable check intervals
 - 🔒 Secure credential management with `.env`
@@ -84,8 +85,8 @@ EMAIL_HOST=imap.gmail.com
 EMAIL_PORT=993
 EMAIL_TLS=true
 
-# Optional: Check interval in milliseconds (default: 60000 = 1 minute)
-# EMAIL_CHECK_INTERVAL=60000
+# Optional: Check interval in milliseconds (default: 3600000 = 1 hour)
+# EMAIL_CHECK_INTERVAL=3600000
 ```
 
 **Common IMAP Settings:**
@@ -137,14 +138,15 @@ pm2 restart discord-email-bot
 
 1. The bot connects to Discord using the provided token
 2. It establishes an IMAP connection to your email server
-3. Launches a headless browser for email rendering
-4. Every minute (configurable), it checks for new unread emails
-5. When a new email is found:
-   - The email is parsed to extract subject, sender, content, and HTML
-   - The email is rendered in a headless browser with beautiful formatting
-   - A screenshot is taken of the rendered email
-   - The subject line and screenshot are posted to Discord
+3. Every minute (configurable), it checks for new unread emails
+4. When a new email is found:
+   - The email is checked to see if it contains "going.com" anywhere
+   - If it does, the subject and content are parsed
+   - Any "View flight details" links are extracted
+   - Images from attachments are prepared
+   - A nicely formatted message is posted to Discord with the subject, link, and images
    - The email is marked as read to avoid duplicate processing
+5. Only emails containing "going.com" are forwarded (filters out spam/other emails)
 
 ## Troubleshooting
 
@@ -186,7 +188,7 @@ pm2 restart discord-email-bot
 Edit the `EMAIL_CHECK_INTERVAL` in your `.env` file (value in milliseconds):
 
 ```env
-EMAIL_CHECK_INTERVAL=30000  # Check every 30 seconds
+EMAIL_CHECK_INTERVAL=3600000  # Check every 1 hour
 ```
 
 ### Modifying Email Embed Format
@@ -200,9 +202,24 @@ const embed = new EmbedBuilder()
   // Add or remove fields as needed
 ```
 
-### Filtering Emails
+### Changing the Email Filter
 
-You can modify `src/emailMonitor.ts` to search for specific emails:
+By default, the bot only forwards emails containing "going.com". To change this, edit `src/index.ts`:
+
+```typescript
+// Find this function:
+const isGoingEmail = (email: any): boolean => {
+  const searchTerm = 'going.com';  // Change this to your filter
+  // ... rest of function
+}
+
+// Examples:
+// - 'airline.com' - only airline emails
+// - 'flight' - any email mentioning flights
+// - '' - empty string to forward ALL emails
+```
+
+You can also filter at the IMAP level in `src/emailMonitor.ts`:
 
 ```typescript
 // Instead of ['UNSEEN'], use:
